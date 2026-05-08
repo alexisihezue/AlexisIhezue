@@ -1,0 +1,476 @@
+---
+title: "Final Paper"
+author: "STOR 520.001 Group 1"
+date: '`r format(Sys.time(), '%B %d, %Y')`'
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '2'
+  html_document:
+    theme: journal
+    toc: yes
+    toc_float: yes
+    toc_collapsed: yes
+    toc_depth: 2
+---
+
+<style type="text/css">
+  body{
+  font-family: Century Schoolbook;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, fig.align = 'center')
+pacman::p_load(tidyverse, gganimate, transformr, knitr, kableExtra, extrafont, caret, patchwork, class, gridExtra)
+```
+
+```{r}
+color1 <- "#eb6864"
+color2 <- "#777777"
+```
+
+
+```{r}
+# Import Data
+houseData <- read.csv("https://raw.githubusercontent.com/zacharyvig/ZachVig/main/House_Rent_Dataset.csv")
+
+# Add a column that converts Rupees to USD
+houseData$RentUSD <- houseData$Rent * 0.012
+
+# Convert date variable
+houseData = houseData %>%
+  mutate(Posted.On = as_date(Posted.On))
+
+
+# Extract month from each date and creating variable for string counterpart
+houseData$month_num = format(as.Date(houseData$Posted.On, format="%Y/%m/%d"),"%m")
+houseData$month = NA
+
+# Convert each numerical month to its string counterpart
+for (x in 1:nrow(houseData)) {
+  if (houseData$month_num[x] == "04") {
+    houseData$month[x] = "April"
+  } else if (houseData$month_num[x] == "05") {
+    houseData$month[x] = "May"
+  } else if (houseData$month_num[x] == "06") {
+    houseData$month[x] = "June"
+  } else if (houseData$month_num[x] == "07") {
+    houseData$month[x] = "July"
+  }
+}
+
+# Clean/build floors variables
+houseData <- houseData %>%
+  #separate floors
+  separate(Floor, into = c("Apt_Floor", "Total_Floors"), sep = " out of ", remove = FALSE, convert = TRUE) %>%
+  #modify special cases
+  mutate(Apt_Floor = case_when(Apt_Floor == "Lower Basement" ~ "-2",
+                               Apt_Floor == "Upper Basement" ~ "-1",
+                               Apt_Floor == "Ground" ~ "1",
+                               .default = Apt_Floor)) %>%
+  mutate(Total_Floors = case_when(is.na(Total_Floors) ~ Apt_Floor,
+                                 .default = as.character(Total_Floors))) %>%
+  #change to numeric
+  mutate(Apt_Floor = as.numeric(Apt_Floor),
+         Total_Floors= as.numeric(Total_Floors)) %>%
+  mutate(Total_Floors = ifelse(is.na(Total_Floors), Apt_Floor, Total_Floors)) %>%
+  mutate(month_num = as.numeric(month_num))
+
+# Remove outliers
+houseData <- houseData %>%
+  filter(RentUSD < 20000)
+```
+
+# Introduction
+
+> **India's construction sector levels up as housing demand spurs economy** ([Reuters, 2023](https://www.reuters.com/world/india/indias-construction-sector-levels-up-housing-demand-spurs-economy-2023-12-02/))
+
+> **The housing crisis for the poor in India’s capital: Lack of affordable housing, reduced land entitlements and accelerated housing for the privileged are behind the crisis.** ([Aljazeera, 2023](https://www.aljazeera.com/gallery/2023/8/30/photos-the-housing-crisis-for-the-poor-in-indias-capital))
+
+As alluded to by the first headline, the housing market in India is [booming](https://www.india.gov.in/topics/housing), with [sales rising 36%](https://www.reuters.com/world/india/indias-construction-sector-levels-up-housing-demand-spurs-economy-2023-12-02/) in just the third quarter of this year across major urban centers. This number is only expected to continue rising as India’s [large generation of young people begin buying homes]( https://www.ft.com/content/b380f48f-2e9a-4bcb-a372-8eb9b58ca290). Importantly, however, as alluded to by the second headline above, access to quality housing is not a given for large parts of the population. The housing gap in major urban areas has been steadily rising over the past decade, [disproportionately impacting low-income groups](https://www.aljazeera.com/gallery/2023/8/30/photos-the-housing-crisis-for-the-poor-in-indias-capital). This problem, while linked to a number of social and economic factors, is in part due to India becoming the [world’s most populous country](https://www.statista.com/statistics/262879/countries-with-the-largest-population/) just this year.
+
+When housing *is* available for these groups, it is often of low quality, with such housing often being concentrated in neglected urban areas called [“slums.”](https://www.theworldmind.org/home/2019/3/1/mumbais-slums-the-positives-and-negatives) These areas often suffer from additional issues related to lack of vital resources and healthcare. As of 2013, a whopping [65 million Indians live in slums]( https://www.thehindu.com/todays-paper/tp-national/tp-newdelhi/65-million-people-live-in-slums-in-india-says-census-data/article5188234.ece). The discrepancy in housing quality between “slums” and more upscale urban areas highlights just one variable aspect of the Indian urban housing market. It also indicates that there exists a complex network of socioeconomic factors that determine housing quality and cause the ebb and flow of the market over time.
+
+In the project at hand, we are interested in building models of the housing market in major Indian urban areas to gain an understanding of what factors influence quality and affordability. Specifically, our goal is to determine first: ***what public information about urban properties best predict rent prices?*** That is, we wish to build a model of rent prices that is built on a variety of characteristics that are publicly available. Such a model could be used by an individual looking for housing and inform one about what things to keep in mind when finding housing, whether one's goal is quality, affordability, or both. The modeling might also shed light on the problem of India's housing gap and the discrepancy in affordable housing access between socioeconomic groups.
+
+Second, we wish to determine ***what public information about urban properties best predicts the preferred tenant***. We will be able to analyze what variables drive renters and landlords to hold these preferences and if there is any (perhaps unfair) difference in family-targeted housing versus other types. Such a model will shed light on the accessibility of quality and affordable housing to families and may illuminate ways in which property listings are biased, whether it be in quality, rent price, location, or other characteristics.
+
+
+***
+
+# Data
+
+For the analysis at hand, we are analyzing property listings from **[MagicBricks.com](https://www.magicbricks.com)**, an Indian buying, selling, and renting website with thousands of postings. The data was web-scraped from most or all listings over the summer of 2022 and uploaded to [Kaggle.com](Kaggle.com). While the website advertises properties all over the country, our data is specific to for-rent locations in six major Indian cities: Kolkata, Mumbai, Bangalore, Delhi, Chennai, and Hyderabad. The complied dataset has 4745 property listings (one extreme outlier was removed^[One lisiting had a rent price of over $40,000 which was ~$25000 dollars over the next highest listing. Since our goal is to build predictive models, we decided to remove this listing since it would unduly influence every model.]), the vast majority of which are smaller apartments located within a larger apartment-style building.
+
+The primary variable of interest is `Rent Price`. The original dataset listed monthly rent price in Indian rupees (₹). With an American audience in mind, we transformed the rent price variable to United States dollars ($) by multiplying by [0.012](https://www.xe.com/currencyconverter/convert/?Amount=1&From=INR&To=USD). Of note is that exploratory data analysis into the rent price variable indicates strong relationships with other variables. Below, we plot the size of a listing by rent price. We also observe how this relationship differs among cities: Mumbai seems to have more "bang for your buck," i.e., higher rent prices are associated with larger properties than other cities. This is just one example of how variable relationships are going to support robust model building in the next section.
+
+```{r}
+p <- ggplot(houseData, aes(x = Size, y = RentUSD)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = 'lm', formula = 'y ~ x', se = T, fullrange = T, aes(color = City)) +
+  transition_states(City, transition_length = 7, state_length = 7) +
+  ylim(0, 15000) +
+  xlab("Size of House") +
+  ylab("Monthly Rent (in USD)") +
+  ggtitle("House Size by Rent Price in {closest_state}") +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5, size = 15), text = element_text(family = "Century Schoolbook", color = color2))
+animate(p, height = 461, width = 844)
+```
+
+As observed in the figure above, property `Size` is another variable of interest, being measured in square feet. An important transformation of this variable that will be useful in model building is rent price *per square foot*, which is calculated as $\frac{\verb|Rent Price|}{\verb|Size|}$. Related to property size is number of rooms, broken down into `BHK` (bathrooms, halls, and kitchens) and `Bathrooms`, and `Floor Number`, listed according to the template "Floor $X$ of $Y$." Importantly, we divided this variable into two separate ones: `Apt Floor` (i.e., $X$, or the actual floor number of a property) and `Total Floors` (i.e., $Y$, or the total floors in the building). Doing so allows us to analyze their separate effects in our models, but importantly we want to use one or the other since they are very dependent.
+
+The remaining variables are categorical variables: `City`, taking one of the six values listed above; `Area Locality`, or the specific name of the neighborhood or part of town in which the property is located; `Furnishing Staus`, or whether the property comes fully furnished, semi-furnished, or neither; `Point of Contact`, or who to contact with inquiries about the property (i.e., the owner directly or an agent); `Area Type` or the area of the house for which `Size` was measured (e.g., just the interior of the house -- or "carpet area" -- versus the interior plus the space the walls take up -- or "built area" -- versus the "built area" plus any external fixtures such as balconies -- or "super built area"; of note is that these differences affect the how the `Size` variable was measured, so including `Area Type` in models will control for these differences); and finally `Tenant Preferred`, indicating who the property is intended to house. 
+
+The `Tenant Preferred` variable, as described in the introduction, is of most importance to our classification models. Importantly, it takes three values: "Bachelors", "Family", or "Bachelors/Family." Because binary classification models rely on *two* outcomes, and because the question of family housing is what we are interested in, we determined that for any binary classification models, the variable should be reduced to "Family" (taking a value of 1) or "Other/No Preference" (taking a value of 0). This transformation will allow us to analyze whether family-specific listings can be predicted using the rest of the variables. Otherwise, classification models that allow for multiple groups will be built using the original, three-group variable.
+
+Finally, each listing comes with a date stamp. Importantly, data were collected from mid-April to mid-July, so not every month has full representation. The number of listings broken down by month and city are presented in the table below. We see that, as expected, April and July have a fewer number of listings than May and June.
+
+```{r, message=F,warning=F}
+house.summary <- houseData %>% 
+  group_by(month, City) %>% 
+  summarize(n=n()) %>% 
+  spread(key=City,value=n) %>%
+  mutate(Total = rowSums(across(is.numeric))) %>%
+  rename(Month = month)
+grandtotal <- as.data.frame(t(colSums(house.summary[,c(2:8)])), optional = T)
+grandtotal$Month <- "Total"
+house.summary <- rbind(house.summary, grandtotal)
+house.summary %>% 
+  kbl() %>%
+  kable_classic(html_font = "Century Schoolbook") %>%
+  kableExtra::row_spec(0, bold = T, background = color2, color = "white") %>%
+  kableExtra::row_spec(5, bold = T, background = color1, color = "white") %>%
+  kableExtra::column_spec(8, bold = T)
+```
+
+***
+
+# Results
+
+## Question 1
+
+> *What public information about urban properties best predict rent price?*
+
+To answer our first questions and predict `Rent`, we used multiple predictive modeling techniques and computed the out-of-sample MAE to make comparisons. First, we made a null model and used Leave-One-Out Cross-Validation to estimate an out-of-sample MAE. This gives us a baseline for making predictions with more complex models. 
+
+We then tried some linear models using variables we thought could be strong predictors in the EDA, i.e., ones that (a) graphically showed a relationship with `Rent`, (b) theoretically showed a relationship with `Rent` (e.g., the `Size` variable), and (c) graphically or theoretically showed a relationship with *another* variable in the model (e.g., the dependency of `Apt Floor` and `Total Floors`; see Linear Model 1). 
+
+### Linear Model 1
+
+The first model used was
+$$
+\verb|Rent| \sim \verb|Size| + \verb|City| + \verb|Area_Type| + \verb|Apt_Floor|* \verb|Total_Floors| 
+$$
+Note that the `AptFloor` $\times$ `TotalFloors` interaction accounts for the fact that they are strongly dependent. 
+
+### Linear Model 2
+
+The second model used was
+$$
+\verb|Rent| \sim \verb|Size| + \verb|Apt_Floor| + \verb|Month| + \verb|BHK|*\verb|Bathroom|
+$$
+
+Note that the `BHK` $\times$ `Bathroom` interaction accounts for the fact that they are strongly linked in terms of total number of rooms in the house. 
+
+### Polynomial Model
+
+We also had a polynomial model with `log(Rent)`. The reason why we transformed the `Rent` using log is that in the Residual vs Fitted plot, the residual is not normally distributed. Once we take the log of Rent, the plot looks much better. The polynomial model was
+$$
+\log(\verb|Rent|) \sim (\verb|Size| + \verb|Size|^2 + \verb|Size|^3)*\verb|City| + \\
+(\verb|Total_Rooms| + \verb|Total_Rooms|^2 + \verb|Total_Rooms|^3)*\verb|City| + \\
+\verb|Total_Floors| + \verb|Total_Floors|^2 + \verb|Total_Floors|^3 + \\
+\verb|Furnishing_Status| + \verb|Tenant_Preferred|
+$$
+Note that `City` was introduced as an interaction to the `Size` and `TotalRooms` variables since there seemed to be a differential trend in `Rent` across these variables in Mumbai compared to other cities (see the figure in $\S$Data above). 
+
+We computed the out-of-sample MAE using Leave-One-Out Cross-Validation for these three models. 
+
+### Elastic Net Models
+
+Additionally, we tried the Elastic Net method which applies a weighted average of a LASSO and Ridge penalty to shrink coefficients. In order to use this method, all the variables have to be numeric. Thus, we made every categorical variable a binary variable. Then, we split the data into Training and Testing sets, the former composing 66.6% of the data and the latter 33.3%. After preparing the data, we created a loop that loops through 10 different $\alpha$ levels from 0 to 1 and used cross validation for each $\alpha$ to select the best $\lambda$ by the one-standard-error (1se) rule. We printed the 10 $\alpha$'s with their best $\lambda$ and selected the pair with the smallest MAE. Then we also used the Elastic Net method to predict the `log(Rent)`. 
+
+### Model Comparison & Final Model
+
+```{r}
+model_names <- c("Null Model", "Linear1", "Linear2", "Polynomial with log(Rent)", "Elastic Net", "Elastic Net with log(Rent)")
+
+mae_values <- c(360, 251, 234, 132, 179, 122)
+
+mae_data <- data.frame(Model = model_names, `Out-of-Sample MAE` = mae_values)
+
+mae_data %>% 
+  kbl(col.names = c("Model", "Out-of-Sample MAE")) %>%
+  kable_classic(html_font = "Century Schoolbook") %>%
+  kableExtra::row_spec(0, bold = T,background = color2, color = "white") %>%
+  kableExtra::column_spec(2, color = color1)
+```
+
+To ensure we could better predict `Rent`, we compared out-of-sample MAE among our models. The results are in the table above. The best model we have is the Elastic Net model with `log(Rent)`. Looking at this model, a lot of the variables were shrunk to zero. The table below has the non-zero variables and their coefficients.  We can see that `Size`, `Tenant Preferred`, `City` (at level 'Hyderabad'), `Point of Contact` (at level 'Contact Agent') have positive effect on predicting `log(Rent)`. `City` (at level 'Delhi'), `Area Type` (at level 'Super Area'), and `Point of Contact` (at level 'Contact Owner') have a negative effect on predicting `log(Rent)`. One thing we notice is that the two Cities that are significant are surprising. In our EDA, we found that Mumbai had the highest rent price per square feet and Delhi has the second highest. However, our model shows Delhi actually has a negative impact on `log(Rent)`. This could be due to the fact that since we are predicting `log(Rent)`, the *magnitude* of rent prices in Delhi is one of the most important points of differentiation compared to other variables specific to Delhi.
+
+```{r}
+coefficients <- c(5.80e+00, 1.73e-05, 1.85e-02, -7.17e-02, 2.88e-03, -2.76e-02, 1.85e-01, -1.71e-01)
+
+variables <- c("(Intercept)", "Size", "Tenant Preferred", "City: Delhi", "City: Hyderabad", "Area Type: Super Area", "Point of Contact: Contact Agent", "Point of Contact: Contact Owner")
+
+coef_data <- data.frame(Variable = variables, Coefficient = coefficients)
+
+coef_data %>%
+  kbl(ccol.names = c("Variable", "Coefficient"), digits = c(2, 5)) %>%
+  kable_classic(html_font = "Century Schoolbook") %>%
+  kableExtra::row_spec(0,bold=T,background=color2,color = "white") %>%
+  kableExtra::column_spec(2, color = color1)
+```
+
+
+## Question 2
+
+> *What public information about urban properties best predicts the preferred tenant?*
+
+To answer our second question, we used different classification models predicting either a binary form or the original multi-class form of the `Tenant Preferred` variable. Binary models allow us to observe specific differences in listings targeted at families versus non-families or no preference, while multi-level classification models allow us to observe specific differences between the original three levels of the `Tenant Preferred` variable.
+
+First, we graphically and statistically analyze differences in listings between family preferred and other listings.
+
+### Graphical Analysis of Binary `Tenant Preferred` Distribution {.tabset .tabset-pills}
+
+```{r}
+# Prepare binary classification dataset
+houseData2 <- houseData %>%
+  #recode preferred tenant variable
+  mutate(Tenant.Family = ifelse(Tenant.Preferred == "Family", 1, 0)) %>%
+  #remove unnecessary variables
+  select(-Rent, -Floor, -Posted.On, -Area.Locality, -Point.of.Contact, -Tenant.Preferred)
+```
+
+#### Overview
+
+```{r}
+# Plot the distribution of Tenant.Family
+ggplot(houseData2, aes(x = as.factor(Tenant.Family))) +
+  geom_bar(aes(fill = as.factor(Tenant.Family)), color = "black") +
+  guides(fill="none") +
+  labs(x = "Tenant Preferred: Family", y = "Count", title = "Distribution of Tenant Preference") +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5, size = 15), 
+          text = element_text(family = "Century Schoolbook", color = color2)) +
+  scale_fill_manual(values = c(color2, color1))
+```
+
+#### By Rent
+
+```{r}
+# RentUSD distribution
+ggplot(houseData2, aes(x = as.factor(Tenant.Family), y = RentUSD)) +
+  geom_boxplot(aes(fill = as.factor(Tenant.Family))) +
+  guides(fill="none") +
+  labs(x = "Tenant Preferred: Family", y = "Rent in USD", title = "Rent Distribution by Tenant Preference") +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5, size = 15), 
+          text = element_text(family = "Century Schoolbook", color = color2)) +
+  scale_fill_manual(values = c(color2, color1))
+```
+
+#### By Size
+
+```{r}
+# Size distribution
+ggplot(houseData2, aes(x = as.factor(Tenant.Family), y = Size)) +
+  geom_boxplot(aes(fill = as.factor(Tenant.Family))) +
+  guides(fill="none") +
+  labs(x = "Tenant Preferred: Family", y = "Size in Sq Ft", title = "Size Distribution by Tenant Preference") +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5, size = 15), 
+        text = element_text(family = "Century Schoolbook", color = color2)) +
+  scale_fill_manual(values = c(color2, color1))
+```
+
+#### By City
+
+```{r, results='asis'}
+# City distribution
+ggplot(houseData2, aes(x = City, fill = as.factor(Tenant.Family))) +
+  geom_bar(position = "dodge", color = "black") +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold", hjust = 0.1, size = 13),
+        axis.text.x = element_text(angle = 90, hjust = 1),
+        text = element_text(family = "Century Schoolbook", color = color2)) +
+  guides(fill = guide_legend(title="Tenant Preferred: Family")) +
+  labs(x = "City", y = "Count", title = "Distribution of Properties by City and Tenant Preference") +
+  scale_fill_manual(values = c(color2, color1))
+```
+
+#### By Furnishing Status
+
+```{r}
+# Furnishing Status distribution
+ggplot(houseData2, aes(x = Furnishing.Status, fill = as.factor(Tenant.Family))) +
+  geom_bar(position = "dodge", color = "black") +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold", hjust = 0.1, size = 13),
+        axis.text.x = element_text(angle = 90, hjust = 1),
+        text = element_text(family = "Century Schoolbook", color = color2)) +
+  guides(fill = guide_legend(title="Tenant Preferred: Family")) +
+  labs(x = "Furnishing Status", y = "Count", title = "Distribution of Properties by Furnishing Status and Tenant Preference") +
+  scale_fill_manual(values = c(color2, color1))
+```
+
+### {-}
+
+We plotted the distribution of the binary `Tenant Preferred` variable to see the balance between family-targeted housing and other preferences. We also created boxplots to compare the distribution of `Rent` and `Size` for family-targeted housing versus other preferences. Finally, we use bar plots to examine the distribution of properties by `City` and `Furnishing Status` against the binary `Tenant Preferred` variable.
+
+The general bar plot shows a significant imbalance between the properties listed for families (1) and others (0), with a much greater number of listings not specifying families as preferred tenants. Additionally, there don't seem to be many outstanding differences in family-targeted housing compared to other types when broken down by other variables, with, perhaps, the exception of `Size`, where family housing may be slightly larger.
+
+### Statistical Analysis of Binary `Tenant Preferred` Variable
+
+Statistically, there *is* a significant difference in the average `Rent` between properties preferred by families (group 1) and others (group 0), based on a t-test. Properties targeted at families have a higher mean `Rent` (approximately \$600.24) compared to other properties (approximately \$390.27).
+ 
+### Binary Classification Model
+
+We then built a binary classification model predicting family preference using logistic regression. First, we randomly split the data into training and testing datasets (80% vs. 20%). Then, we created the following model with the resulting coefficients in the table below:
+
+$$
+\log(\frac{p_\textrm{Family}}{1-p_\textrm{Family}}) \sim \verb|BHK| + \verb|Size| + \verb|Rent| + \verb|City| +\verb|Furnishing_Status|+\verb|Area_Type|
+$$
+
+```{r}
+# Convert categorical variables to factors
+houseData2$City <- as.factor(houseData2$City)
+houseData2$Furnishing.Status <- as.factor(houseData2$Furnishing.Status)
+houseData2$Area.Type <- as.factor(houseData2$Area.Type)
+
+# Split the data into training and testing sets
+set.seed(123)  # Setting seed for reproducibility
+training_indices <- sample(1:nrow(houseData2), 0.8 * nrow(houseData2))
+train_data <- houseData2[training_indices, ]
+test_data <- houseData2[-training_indices, ]
+```
+ 
+```{r}
+# Train the logistic regression model
+family_model <- glm(Tenant.Family ~ BHK + Size + RentUSD + City + Furnishing.Status + Area.Type,
+                    family = binomial(link = "logit"), data = train_data)
+
+```
+
+```{r}
+coefficients2 <- unname(family_model$coef)
+
+variables2 <- c("(Intercept)", "BHK", "Size","Rent", "City: Chennai", "City: Delhi", "City: Hyderabad","City: Kolkata", "City: Mumbai", "Furnishing Status: Semi-Furnished", "Furnishing Status: Unfurnished", "Area Type: Carpet Area", "Area Type: Super Area")
+
+coef_data2 <- data.frame(Variable = variables2, Coefficient = coefficients2)
+
+coef_data2 %>%
+  kbl(ccol.names = c("Variable", "Coefficient"), digits = c(2, 5)) %>%
+  kable_classic(html_font = "Century Schoolbook") %>%
+  kableExtra::row_spec(0,bold=T,background=color2,color = "white") %>%
+  kableExtra::column_spec(2, color = color1)
+```
+
+We then made predictions on the testing dataset to test the model's accuracy. We converted log(odds) values to probabilities, and used a threshold of 0.5. This threshold is a common default for binary classification. It means that if the model estimates the probability of a property being preferred by families as more than 50%, it will be classified as such. Our results indicate a classification accuracy of about 90%. This is good at face value, but when we look at the results of the confusion matrix, we see that the model actually classified *none* of the properties as family preferred and that the high accuracy was merely due to there being so few family-specific properties in the dataset. 
+
+Thus, we sought to improve our model and explore these results with a more complex, multi-class classification algorithm.
+
+### KNN Classification Model
+
+A KNN model was used to determine whether or not all our variables could be used to predict the tenant preferred. Additional data preparation was completed first for the algorithm to run correctly^[Note that the outlier removed from other models was added back in here as concerns about undue influence were less severe.].
+
+#### Data Preparation
+
+In order to prepare the data for KNN modeling, all of the variables that were not already numeric were encoded. These variables included `Area Locality`, `Tenant Preferred`, `Point of Contact`, `Area Type`, `City`, and `Furnishing Status`. `Area Locality` was frequency encoded, i.e., reassigned a value indicating how many listings exist for that locality in the dataset. The rest of the variables had their values turned into a number starting from 1 and ending at the number of unique values for the respective variable. Once the this was done, rather than keeping one column for each of these variables, new binary columns were created that represented the range of numbers that were assigned to them. For example, the original `Area Type` column had three levels: "Super Area", "Carpet Area", and "Built Area." Three new binary columns were created with one for each level. Every row in the data set was then looped through for each column, assigning a 1 to the rows that contained that carpet area, and a 0 to those that did not. 
+
+This same process was repeated for all the other categorical variables except `Tenant Preferred` since it is our variable of focus in the multi-class KNN model. Rather than splitting its original column into three binary ones due to its three levels, these three levels were maintained in one column and assigned the numbers 1 through 3, and the `Tenant Preferred` column was converted into a factor. Once all the variables had been encoded and there were no more string values, their original columns were dropped from the data frame. 
+
+The final step in processing the data included scaling the predictor values. Since KNN is a distance-focused algorithm, the goal is to make sure the distance between all the observations is as small as possible. The scale function was used on the columns corresponding to our feature/predictor columns in order to standardize them.
+
+#### Model Building
+
+After the data preparation was complete, the data were randomly split into training and testing sets using a 60:40 split. By default, the initial *k*-value that was used was the square root of the number of observations from our original data set, which proved to be 69. However, in order to deduce the most optimal hyper-parameter, a vector of *k* values that included the numbers 5, 15, 25, 35, 45, 55, 65, 69, 75, 85, 95, 100 was created to pass to the model. Using the KNN classifier within the `caret` package, a KNN model for each *k* value was created and cross-validated using the built-in *k*-fold cross-validation method. The number of folds was set to 5. 
+
+The resulting model deduced that the most optimal *k* value was 69 with an overall accuracy of 73.67%. 
+
+However, when examining the predicted values to calculate the number of listings that would have a family as the preferred tenant, there were no values of 3, the number assigned to the "Family" level of the `Tenant Preferred` factor.  
+
+```{r}
+predict_actual = data.frame(
+  `No Preference` = c(1360, 32, 0),
+  `Bachelors` = c(284, 39, 0),
+  `Family` = c(182, 2, 0)
+)
+
+rownames(predict_actual) = c("No Preference", "Bachelors", "Family")
+colnames(predict_actual) <- c("No Preference", "Bachelors", "Family")
+
+predict_actual %>%
+  kbl() %>%
+  kable_classic(html_font = "Century Schoolbook") %>%
+  kableExtra::row_spec(0, bold = T, background = color2, color = "white") %>%
+  kableExtra::column_spec(1, bold = T, background = color2, color = "white") %>%
+  kableExtra::column_spec(2, color = color1) %>%
+  kableExtra::column_spec(3, color = color1) %>%
+  kableExtra::column_spec(4, color = color1) %>%
+  add_header_above(head = c("Predicted" = 1, "Actual" = 3), bold = T, 
+                   color = c(color2, color1))
+```
+
+The table above, extracted from the confusion matrix, illustrates this phenomenon. For the "Bachelors/Family" level in the `Tenant Preferred` factor, we see that 1360 listings were successfully predicted based on the combination of other predictors. However, 284 listings were falsely predicted, when the actual preference was for "Bachelors"; 182 listings were falsely predicted as having this preference when the actual preference was for family. This same logic with different values follows across the second row, which represents the combination of positive and negative predictions for the "Bachelors" level. On the other hand, once we reach the last row, which corresponds to the "Family" level, there are nothing but 0s for the entire row. Due to this, we cannot ascertain the predicted percentage of listings that have a tenant preference for families--but, as was mentioned during the logistic model building, in the scope of our data set this makes a lot of sense. 
+
+When examining the original data set, 3444 listings have a tenant preference of bachelors or families, 830 for bachelors, and 472 for families. The original data set simply does not have enough entries for this preference to soundly sample the data set or generate a strong KNN model, and other metrics corroborate this.  
+
+```{r}
+knn_model_results <- readRDS("knn_results.Rds")
+dot_coordinates <- data.frame(x = 69, y = 0.7256741)
+```
+
+```{r, fig.ncol=2, fig.align='center', fig.cap=" ", out.width="50%", fig.show="hold"}
+ggplot(knn_model_results, aes(x = k, y = Accuracy)) +
+  geom_line(color = color2) +
+  geom_point(data = dot_coordinates, aes(x = x, y = y), color = "black", size = 2) +
+  labs(title = "Accuracy Scores Based on k") +
+  theme_bw() +
+    theme(plot.title = element_text(face = "bold", hjust = 0.5),
+          text = element_text(family = "Century Schoolbook", color = color2))
+  
+
+ggplot(knn_model_results, aes(x = k, y = Kappa)) +
+  geom_line(color = color1) +
+  geom_point(data = knn_model_results[knn_model_results$k == 69, ], aes(x = k, y = Kappa), color = "black", size = 2) +
+  labs(title = "Kappa Values Based on k") +
+  theme_bw() +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5),
+        text = element_text(family = "Century Schoolbook", color = color2))
+```
+
+Each of the cross-validated models generated using one of the specified k-values had a resulting accuracy score that was no less than roughly 69%. The scores also appear to increase and peak at a k-value of 69, the black dot on the graph, before plummeting. Conversely, the kappa values appear to decrease as our hyper-parameter increases. Kappa is a metric that helps determine the agreement between observed and expected classification. It essentially measures whether the model is reliable enough to make consistent predictions or if our results are just due to chance.  Because accuracy is so high, yet our kappa values are low, beginning at roughly 0.20, and decreasing as the k-values increase, it means the KNN model is producing an accuracy close to what would be expected by random chance, and not because the model performs so well. This is most likely due to the class imbalance introduced due to the lack of representation within our label, `Tenant Preferred`, in the data set. 
+
+```{r}
+class_stats <- data.frame(
+  Sensitivity = c(0.9770115, 0.1207430, 0),
+  Specificity = c(0.08086785, 0.97842640, 1)
+)
+names = c("No Preference", "Bachelors", "Family")
+rownames(class_stats) <- names
+
+class_stats %>%
+  kbl() %>%
+  kable_classic(html_font = "Century Schoolbook") %>%
+  kableExtra::row_spec(0, bold = T, background = color2, color = "white") %>%
+  kableExtra::column_spec(2, color = color1) %>%
+  kableExtra::column_spec(3, color = color1)
+```
+
+Furthermore, based on the confusion matrix provided from the KNN model, we can see that the "Bachelors/Family" level has a high sensitivity and low specificity, indicating that the model was extremely successful in positively identifying listings within this tenant preference, but not at avoiding falsely classified listings within this preference. The opposite is true for "Bachelors." "Family" has a specificity of 1. The KNN model made absolutely no instances of false positives--because it could not. 
+
+This KNN model, which boasts a high accuracy score, would have been able to deduce that our features were mostly successful in predicting tenant preference and help us determine the predicted proportion of listings with a tenant preference for families, and the characteristics of these listings. However, it is not feasible, because it points to a large flaw in the data set: a robust representation of listings that have a tenant preference of bachelors or families, with a smaller representation for those that seek out families alone. 
+
+***
+
+# Conclusion
+
+Our analysis focused on addressing two main questions: what public information could best predict rent prices within major urban areas in India, and conversely, by using this same public information, would we be able to accurately predict a tenant preference for families. To address the first question, we examined several models that incorporated different subsets of the predictors provided by our data set. Our null model produced the highest MAE. The use of two linear models, each both predicting rent prices based on a different combination of continuous variables, generated MAEs of 251 and 234. But after realizing log transformations worked best to normalize our models, the incorporation of a polynomial model that utilized a log transformation of the response variable saw a decisive decrease of MAE to 132. However, it was the elastic model, which selected the size, tenant preference, and a combination of certain levels from the city, area type, and point of contact factors, that produced the smallest overall MAE with 122. To address the second question on the predictive ability of the data to determine the preferred tenant, two classification models were used: logistic regression and KNN, both of which yielded similar results. Our initial exploratory analysis hinted at a clear inconsistency in the data once it was grouped according to the preferred tenant, and our classification models confirmed this. The binary classification model was able to predict the preferred tenant with a 90% accuracy, but the confusion matrix illuminates the fact that in spite of this, the model was not able generate any predictions of the preferred tenant to be a family. The KNN model mirrored these results. Further inspection alludes to a lack of robust representation of different tenant preferences as a reason why, contributing to poor sampling and weak predictive ability. 
+	
+The findings spotlighted in this analysis are particularly useful in a real-world application, because, beyond the scope of India, housing security is a global issue. In the wake of the economic downturn that resulted from the pandemic and population strains, both of which are illustrated in India, increasing housing costs contribute to a high cost of living and simultaneous low standard of living. We see this embodied in India’s working class, but we can turn to our own backyard to see the same reality reflected right [here](https://endhomelessness.org/blog/rising-rents-and-inflation-are-likely-increasing-low-income-families-risk-of-homelessness/) in the United States. As a result, by investigating what combination of predictors can accurately discern rent prices in India by inspecting variables that embody geographical differences, property specifications, and tenancy requirements and preferences, we provide insight for several stakeholders in this issue. This includes tenants trying to make informed financial decisions that will support their lifestyles, and those of who might live with them, or government entities like city planners and policymakers who are interested in reviewing information like this to establish legislation and decisions on things like rent control and housing affordability. These predictions are also demonstrative of the health of the economy at large. These same insights and investigative processes can be extracted and replicated with data from other countries as well, not just India. Furthermore, trying to create a model with enough predictive power to determine the preferred tenant, even while unsuccessful, presents the potential to help consumers make informed decisions when trying to isolate what combination of values from these variables may narrow down the type of rental that will meet their needs. 
+	
+Our inability to create a strong predictive model for the preferred tenant lends itself to future modifications we would make if possible. While our final elastic net model predicting rent didn’t exactly highlight the predictors we thought it would, as we hypothesized a greater importance of other numerical variables in lieu of the almost completely categorical ones used, it offers more conclusive findings. We can establish these variables as important predictors for rent prices within the urban areas mentioned in our data set. However, the sampling constraints within the data set prevented us from accurately addressing our second question. In the future, in order to combat this, we would want a more robust data set to combat class imbalances, or undersample some factors while oversampling others. Furthermore, while India boasts many geographical divisions, as revealed by the sheer volume of the `Area Locality` variable, introducing more data, like information on things like [crime rates](https://www.statista.com/statistics/633155/reported-crime-rate-in-major-cities-india/),  population, and income levels can further contextualize the data and potentially aid in predictive power, as these also influence rent prices. This data, while hard to find online, would have been a great resource.
+
